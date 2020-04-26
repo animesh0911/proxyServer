@@ -1,12 +1,11 @@
 import socket
 import threading
 import json
-import ssl
 
 class Server:
     def __init__(self):
         self.serverSocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM) #using IPv4 addresses and TCP
-        self.serverSocket.bind(('127.0.0.1',8000))
+        self.serverSocket.bind(('127.0.0.1',9000))
         self.serverSocket.listen(10)
     
     def isHostAllowed(self,conn,addr):
@@ -17,11 +16,18 @@ class Server:
                 return False
         return True
 
+    def isWebsiteAllowed(self, webserver):
+        file = open("lists.json","r")
+        lists = json.load(file)
+        for website in lists["blocked_websites"]:
+            if(website == webserver):
+                return False
+        return True
+
     def connectToClient(self):
         print("Waiting for clients")
         while True:
             conn,client_addr = self.serverSocket.accept()
-            print(client_addr)
             if(not self.isHostAllowed(conn,client_addr)):
                 conn.close()
                 continue
@@ -30,25 +36,32 @@ class Server:
 
     def handleClient(self,conn,client_addr):
         request = conn.recv(2048)
-        #print(request)
         first_line=request.split(b'\n')[0]
         url = first_line.split(b' ')[1]
+        isHTTPS = first_line.split(b' ')[0]
         (webserver,port) = self.getWebServerPort(url)
+        if(not self.isWebsiteAllowed(str(webserver))):
+            conn.close()
+        print(webserver)
+        #print(port)
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s = ssl.wrap_socket(s, keyfile=None, certfile=None, server_side=False, cert_reqs=ssl.CERT_NONE, ssl_version=ssl.PROTOCOL_SSLv23)
-        #s.connect((webserver, port))
-        #s.sendall(request)
-        s.connect(('github.com', 443))
-        s.sendall(b"GET / HTTP/1.1\r\nHost: github.com\r\nConnection: close\r\n\r\n")
-        while 1:# receive data from web server
+        s.connect((webserver, port))
+        if(isHTTPS == b'CONNECT'): # https request
+            conn.send(b'HTTP/1.1 200 Connection established\r\nProxy-agent: Simple/0.1\r\n\r\n')
+            ServerToClientThread = threading.Thread(target=self.forwardData,args=(s,conn))
+            ServerToClientThread.start()
+            self.forwardData(conn, s)
+        else: # http request
+            s.sendall(request)
+            self.forwardData(s, conn)
+
+    def forwardData(self, s, conn):
+        while 1:   
             data = s.recv(2048)
-            print(data)
             if (len(data) > 0):
-                conn.send(data) # send to browser/client
+                conn.sendall(data)
             else:
                 break
-        s.close()
-        conn.close()
 
     def getWebServerPort(self,url):
         http_pos = url.find(b"://") # find pos of ://
@@ -63,7 +76,7 @@ class Server:
         webserver = ""
         port = -1
         if (port_pos==-1 or webserver_pos < port_pos): 
-            port = 443 #default
+            port = 80 #default
             webserver = temp[:webserver_pos] 
         else: # specific port 
             port = int((temp[(port_pos+1):])[:webserver_pos-port_pos-1])
